@@ -1,0 +1,385 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Cat-Clicker: Котик-Кликер</title>
+    <!-- Подключение Tailwind CSS CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Подключение Tone.js CDN для генерации звуков -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.min.js"></script>
+    <!-- Настройка шрифта Inter для красоты -->
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;700&display=swap');
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #0f172a; /* Темный фон (slate-900) */
+        }
+        /* Анимация клика для спрайта */
+        .click-animation {
+            /* Добавлено плавное изменение цвета для фона */
+            transition: transform 0.05s ease-out, background-color 0.15s ease-in-out; 
+        }
+        .click-animation:active {
+            transform: scale(0.90); /* Более заметное сжатие при клике */
+        }
+    </style>
+</head>
+<body class="min-h-screen flex items-center justify-center p-4">
+
+    <div id="game-container" class="w-full max-w-4xl bg-slate-800 p-6 md:p-10 rounded-3xl shadow-2xl border border-slate-700">
+        
+        <!-- Заголовок и статистика -->
+        <header class="text-center mb-8">
+            <h1 class="text-4xl md:text-5xl font-extrabold text-indigo-400 mb-2">Ультра-Кликер 2000</h1>
+            <div id="points-display" class="text-6xl md:text-8xl font-bold text-white mb-2 transition-all duration-300">0</div>
+            <p class="text-lg text-slate-400">
+                Очков за клик: <span id="multiplier-display" class="font-semibold text-green-400">1</span> | 
+                CPS: <span id="cps-display" class="font-semibold text-yellow-400">0.00</span>
+            </p>
+        </header>
+
+        <!-- Игровая зона (Кнопка клика - Кот) -->
+        <section class="flex justify-center mb-10">
+            <!-- Удалены статичные классы цвета, они будут добавляться JS -->
+            <button id="click-button" 
+                    class="click-animation w-48 h-48 md:w-64 md:h-64 rounded-full 
+                           shadow-xl shadow-indigo-900/50 flex items-center justify-center 
+                           text-white text-7xl md:text-8xl 
+                           cursor-pointer select-none transition-all duration-150 transform hover:scale-105 active:scale-95">
+                &#128008; <!-- Кот Эмоджи -->
+            </button>
+        </section>
+
+        <!-- Апгрейды -->
+        <section class="grid grid-cols-1 md:grid-cols-2 gap-6">
+            
+            <!-- Апгрейд Множителя (Клика) -->
+            <div class="bg-slate-700 p-5 rounded-xl border border-slate-600">
+                <h3 class="text-2xl font-bold text-white mb-3">Улучшить Клик</h3>
+                <p class="text-slate-300 mb-4">Увеличивает количество очков за клик на 1.</p>
+                <button id="buy-click-upgrade" 
+                        class="w-full py-3 rounded-lg text-lg font-bold transition duration-150 
+                               bg-green-600 hover:bg-green-500 text-white disabled:bg-slate-600 disabled:text-slate-400">
+                    Купить: <span id="cost-click-upgrade">10</span> Очков
+                </button>
+            </div>
+
+            <!-- Апгрейд Авто-Кликера (CPS) -->
+            <div class="bg-slate-700 p-5 rounded-xl border border-slate-600">
+                <h3 class="text-2xl font-bold text-white mb-3">Автоматизация</h3>
+                <p class="text-slate-300 mb-4">Увеличивает пассивный доход (CPS) на 0.5.</p>
+                <button id="buy-auto-upgrade" 
+                        class="w-full py-3 rounded-lg text-lg font-bold transition duration-150 
+                               bg-yellow-600 hover:bg-yellow-500 text-white disabled:bg-slate-600 disabled:text-slate-400">
+                    Купить: <span id="cost-auto-upgrade">50</span> Очков
+                </button>
+            </div>
+        </section>
+
+        <!-- Футер и Управление -->
+        <footer class="mt-8 pt-6 border-t border-slate-700 flex justify-end">
+            <button id="reset-button" 
+                    class="py-2 px-6 rounded-lg text-sm font-semibold 
+                           bg-red-600 hover:bg-red-500 text-white transition duration-150">
+                Сброс Прогресса
+            </button>
+        </footer>
+
+    </div>
+
+    <script>
+        // Инициализация глобальных переменных
+        const STORAGE_KEY = 'ultraClickerGameState';
+        const AUTOSAVE_INTERVAL = 10000; // 10 секунд
+
+        // Элементы DOM
+        const pointsDisplay = document.getElementById('points-display');
+        const multiplierDisplay = document.getElementById('multiplier-display');
+        const cpsDisplay = document.getElementById('cps-display');
+        const costClickUpgrade = document.getElementById('cost-click-upgrade');
+        const costAutoUpgrade = document.getElementById('cost-auto-upgrade');
+        const clickButton = document.getElementById('click-button');
+        const buyClickUpgradeButton = document.getElementById('buy-click-upgrade');
+        const buyAutoUpgradeButton = document.getElementById('buy-auto-upgrade');
+        const resetButton = document.getElementById('reset-button');
+
+        // Базовое состояние игры
+        const defaultState = {
+            points: 0,
+            multiplier: 1,
+            autoClickRate: 0, // CPS
+            upgradeCostClick: 10,
+            upgradeCostAuto: 50,
+            lastSave: Date.now()
+        };
+
+        let gameState = { ...defaultState };
+        let gameLoopInterval;
+        let autosaveTimer;
+        let isSaving = false;
+        
+        // --- Аудио-Система (Tone.js) ---
+        let clickSynth;
+        let upgradeSynth;
+        let errorSynth;
+        let isAudioInitialized = false;
+        
+        // --- Цвета Котика (Tailwind classes) ---
+        const CAT_COLORS = [
+            'bg-indigo-600',
+            'bg-pink-600',
+            'bg-green-600',
+            'bg-yellow-600',
+            'bg-purple-600',
+            'bg-teal-600',
+        ];
+        // Начинаем с первого цвета
+        let currentColorIndex = 0;
+
+        /** Инициализирует аудио-контекст и синтезаторы Tone.js. 
+         * Вызывается при первом взаимодействии пользователя. */
+        function initializeAudio() {
+            if (isAudioInitialized) return;
+            try {
+                // Запуск аудио-контекста (требуется жест пользователя)
+                Tone.start();
+
+                // 1. Инициализация клик-синта (короткий, звонкий звук)
+                clickSynth = new Tone.MembraneSynth().toDestination();
+                clickSynth.volume.value = -10; // Сделать чуть тише
+
+                // 2. Инициализация апгрейд-синта (подтверждающий, восходящий аккорд)
+                upgradeSynth = new Tone.PolySynth(Tone.Synth, {
+                    oscillator: { type: "square" },
+                    envelope: { attack: 0.01, decay: 0.2, sustain: 0.05, release: 0.3 },
+                }).toDestination();
+                upgradeSynth.volume.value = -12;
+
+                // 3. Синт для сброса/ошибки (низкий, нисходящий звук)
+                errorSynth = new Tone.Synth({
+                    oscillator: { type: "sawtooth" },
+                    envelope: { attack: 0.01, decay: 0.2, sustain: 0.0, release: 0.5 },
+                }).toDestination();
+                errorSynth.volume.value = -8;
+
+                isAudioInitialized = true;
+                
+                // Удаляем слушатели, чтобы инициализация не происходила повторно
+                document.body.removeEventListener('click', initializeAudio);
+                document.body.removeEventListener('touchstart', initializeAudio);
+
+            } catch (e) {
+                console.error("Ошибка инициализации аудио:", e);
+            }
+        }
+        
+        // Привязываем инициализацию к первому взаимодействию пользователя
+        document.body.addEventListener('click', initializeAudio, { once: true });
+        document.body.addEventListener('touchstart', initializeAudio, { once: true });
+
+        // --- Сохранение и Загрузка ---
+
+        /** Загружает состояние игры из localStorage. */
+        function loadGame() {
+            try {
+                const savedState = localStorage.getItem(STORAGE_KEY);
+                if (savedState) {
+                    const parsedState = JSON.parse(savedState);
+                    
+                    // Обеспечение наличия всех полей (защита от старых сохранений)
+                    gameState = { ...defaultState, ...parsedState };
+                }
+            } catch (error) {
+                console.error("Ошибка загрузки состояния игры:", error);
+                // В случае ошибки используем дефолтное состояние
+                gameState = { ...defaultState };
+            }
+            updateUI();
+            startGameLoop();
+        }
+
+        /** Сохраняет текущее состояние игры в localStorage. */
+        function saveGame() {
+            if (isSaving) return; // Предотвращение параллельного сохранения
+            isSaving = true;
+            try {
+                gameState.lastSave = Date.now();
+                localStorage.setItem(STORAGE_KEY, JSON.stringify(gameState));
+                // console.log("Игра сохранена.");
+            } catch (error) {
+                console.error("Ошибка сохранения состояния игры:", error);
+            } finally {
+                isSaving = false;
+            }
+        }
+
+        /** Устанавливает таймер для автоматического сохранения. */
+        function setupAutosave() {
+            if (autosaveTimer) {
+                clearInterval(autosaveTimer);
+            }
+            autosaveTimer = setInterval(saveGame, AUTOSAVE_INTERVAL);
+        }
+
+        // --- Обновление Интерфейса и Логика Игры ---
+
+        /** Обновляет все элементы интерфейса в соответствии с gameState. */
+        function updateUI() {
+            pointsDisplay.textContent = Math.floor(gameState.points).toLocaleString('ru-RU');
+            multiplierDisplay.textContent = gameState.multiplier.toLocaleString('ru-RU');
+            cpsDisplay.textContent = gameState.autoClickRate.toFixed(2).toLocaleString('ru-RU');
+            
+            costClickUpgrade.textContent = gameState.upgradeCostClick.toLocaleString('ru-RU');
+            costAutoUpgrade.textContent = gameState.upgradeCostAuto.toLocaleString('ru-RU');
+
+            // Управление доступностью кнопок
+            buyClickUpgradeButton.disabled = gameState.points < gameState.upgradeCostClick;
+            buyAutoUpgradeButton.disabled = gameState.points < gameState.upgradeCostAuto;
+
+            if (buyClickUpgradeButton.disabled) {
+                buyClickUpgradeButton.title = 'Недостаточно очков';
+            } else {
+                buyClickUpgradeButton.title = 'Повысить множитель клика';
+            }
+
+            if (buyAutoUpgradeButton.disabled) {
+                buyAutoUpgradeButton.title = 'Недостаточно очков';
+            } else {
+                buyAutoUpgradeButton.title = 'Купить авто-кликер';
+            }
+
+            saveGame(); // Сохранение при каждом значительном изменении UI/состояния
+        }
+
+        /** Обрабатывает клик по кнопке. */
+        function clickerClick() {
+            if (isAudioInitialized) {
+                // Звук клика: короткий удар
+                clickSynth.triggerAttackRelease("C5", "16n");
+            }
+            
+            // --- Логика смены цвета Котика ---
+            // Удаляем старый класс цвета
+            const oldColorClass = CAT_COLORS[currentColorIndex];
+            
+            // Переходим к следующему цвету
+            currentColorIndex = (currentColorIndex + 1) % CAT_COLORS.length;
+            
+            // Добавляем новый класс цвета
+            const newColorClass = CAT_COLORS[currentColorIndex];
+            
+            clickButton.classList.remove(oldColorClass);
+            clickButton.classList.add(newColorClass);
+            // --- Конец Логики смены цвета Котика ---
+
+            gameState.points += gameState.multiplier;
+            updateUI();
+        }
+
+        /** Покупает апгрейд множителя. */
+        function buyClickUpgrade() {
+            if (gameState.points >= gameState.upgradeCostClick) {
+                if (isAudioInitialized) {
+                    // Звук успеха: восходящий аккорд
+                    upgradeSynth.triggerAttackRelease(["C5", "E5", "G5"], "4n"); 
+                }
+                gameState.points -= gameState.upgradeCostClick;
+                gameState.multiplier += 1;
+                // Увеличение стоимости: (текущая * 1.5) + 5
+                gameState.upgradeCostClick = Math.floor(gameState.upgradeCostClick * 1.5) + 5;
+            } else {
+                if (isAudioInitialized) {
+                    // Звук ошибки: низкий тон
+                    errorSynth.triggerAttackRelease("C3", "8n"); 
+                }
+            }
+            updateUI();
+        }
+
+        /** Покупает апгрейд авто-кликера. */
+        function buyAutoUpgrade() {
+            if (gameState.points >= gameState.upgradeCostAuto) {
+                if (isAudioInitialized) {
+                    // Звук успеха: восходящий аккорд
+                    upgradeSynth.triggerAttackRelease(["C5", "E5", "G5"], "4n");
+                }
+                gameState.points -= gameState.upgradeCostAuto;
+                gameState.autoClickRate += 0.5; // Увеличение CPS
+                // Увеличение стоимости: (текущая * 1.7) + 10
+                gameState.upgradeCostAuto = Math.floor(gameState.upgradeCostAuto * 1.7) + 10;
+            } else {
+                if (isAudioInitialized) {
+                    // Звук ошибки: низкий тон
+                    errorSynth.triggerAttackRelease("C3", "8n");
+                }
+            }
+            updateUI();
+        }
+
+        /** Сбрасывает состояние игры к начальному. */
+        function resetGame() {
+            // Использование confirm() допустимо, так как это простое уведомление
+            const isConfirmed = confirm('Вы уверены, что хотите сбросить весь прогресс?');
+            if (isConfirmed) {
+                if (isAudioInitialized) {
+                    // Низкий звук сброса
+                    errorSynth.triggerAttackRelease(["G3", "C3"], "2n"); 
+                }
+                // Удаляем старый цвет перед сбросом
+                clickButton.classList.remove(CAT_COLORS[currentColorIndex]);
+                currentColorIndex = 0; // Сброс индекса цвета
+                clickButton.classList.add(CAT_COLORS[currentColorIndex]); // Установка начального цвета
+                
+                gameState = { ...defaultState };
+                localStorage.removeItem(STORAGE_KEY);
+                updateUI();
+            }
+        }
+
+        /** Основной игровой цикл для расчета пассивного дохода. */
+        function gameLoop() {
+            const deltaTime = 1000 / 60; // 60 кадров в секунду (для плавного дохода)
+
+            // Добавляем очки: CPS * (Время / 1000 мс)
+            const income = gameState.autoClickRate * (deltaTime / 1000);
+            gameState.points += income;
+            
+            // Обновляем UI только при наличии дохода
+            if (income > 0) {
+                 pointsDisplay.textContent = Math.floor(gameState.points).toLocaleString('ru-RU');
+                 buyClickUpgradeButton.disabled = gameState.points < gameState.upgradeCostClick;
+                 buyAutoUpgradeButton.disabled = gameState.points < gameState.upgradeCostAuto;
+            }
+            
+            gameLoopInterval = requestAnimationFrame(gameLoop);
+        }
+
+        /** Запускает основной цикл игры. */
+        function startGameLoop() {
+             if (gameLoopInterval) {
+                 cancelAnimationFrame(gameLoopInterval);
+             }
+             gameLoopInterval = requestAnimationFrame(gameLoop);
+        }
+
+        // --- Регистрация Событий ---
+
+        clickButton.addEventListener('click', clickerClick);
+        buyClickUpgradeButton.addEventListener('click', buyClickUpgrade);
+        buyAutoUpgradeButton.addEventListener('click', buyAutoUpgrade);
+        resetButton.addEventListener('click', resetGame);
+        
+        // Загрузка игры при старте
+        window.onload = () => {
+            // Устанавливаем начальный цвет для кнопки (котика)
+            clickButton.classList.add(CAT_COLORS[currentColorIndex]);
+            loadGame();
+            setupAutosave();
+        };
+
+        // Сохранение при закрытии/обновлении страницы
+        window.addEventListener('beforeunload', saveGame);
+    </script>
+</body>
+</html>
